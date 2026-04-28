@@ -6,49 +6,123 @@ on:
   pull_request:
 
 jobs:
-  smoke:
-    name: smoke (no-deps compile check)
+  compile-check:
+    name: compile-check (stubbed deps)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      # The full build needs sherpa-onnx + llama.cpp built locally (~20 min via
-      # setup.sh). For CI we just lint the C source: confirm it parses, that
-      # headers are self-consistent, and that the persona / scenario assets are
-      # well-formed. The actual end-to-end build is exercised by hand for now —
-      # tracked in issue #2 (TODO: full CI build matrix).
-      - name: install minimal toolchain
+      - name: install toolchain
         run: |
           sudo apt-get update -y
           sudo apt-get install -y build-essential libcurl4-openssl-dev
 
-      - name: lint C sources (-fsyntax-only with stub headers)
+      - name: build stubs
         run: |
-          # Build a tiny shim that satisfies the sherpa-onnx + llama.cpp + miniaudio
-          # include lookups so the compiler can syntax-check our own code.
-          mkdir -p ci-stub/sherpa-onnx/c-api ci-stub
-          cat > ci-stub/sherpa-onnx/c-api/c-api.h <<'STUB'
+          mkdir -p ci-stubs/sherpa-onnx/c-api ci-stubs
+          cat > ci-stubs/sherpa-onnx/c-api/c-api.h <<'STUB'
           #pragma once
           #include <stdint.h>
           #include <stddef.h>
-          /* Minimal stub for syntax checking; real header lives in deps/. */
           typedef struct SherpaOnnxOfflineRecognizer       SherpaOnnxOfflineRecognizer;
-          typedef struct SherpaOnnxOfflineRecognizerConfig { struct { struct { const char *encoder, *decoder; } whisper; const char *tokens; int num_threads; const char *provider; } model_config; const char *decoding_method; } SherpaOnnxOfflineRecognizerConfig;
           typedef struct SherpaOnnxOfflineStream           SherpaOnnxOfflineStream;
-          typedef struct SherpaOnnxOfflineRecognizerResult { const char *text; } SherpaOnnxOfflineRecognizerResult;
           typedef struct SherpaOnnxVoiceActivityDetector   SherpaOnnxVoiceActivityDetector;
-          typedef struct SherpaOnnxVadModelConfig          { struct { const char *model; float threshold, min_silence_duration, min_speech_duration; } silero_vad; int sample_rate, num_threads; const char *provider; } SherpaOnnxVadModelConfig;
-          typedef struct SherpaOnnxSpeechSegment           { const float *samples; int n; } SherpaOnnxSpeechSegment;
           typedef struct SherpaOnnxOfflineTts              SherpaOnnxOfflineTts;
-          typedef struct SherpaOnnxOfflineTtsConfig        { struct { struct { const char *model, *voices, *tokens, *data_dir, *lexicon, *dict_dir, *lang; float length_scale; } kokoro; int num_threads; int debug; const char *provider; } model; } SherpaOnnxOfflineTtsConfig;
-          typedef struct SherpaOnnxGeneratedAudio          { const float *samples; int n; } SherpaOnnxGeneratedAudio;
+          typedef struct SherpaOnnxOfflineRecognizerConfig {
+              struct { struct { const char *encoder, *decoder; } whisper; const char *tokens; int num_threads; const char *provider; } model_config;
+              const char *decoding_method;
+          } SherpaOnnxOfflineRecognizerConfig;
+          typedef struct SherpaOnnxOfflineRecognizerResult { const char *text; } SherpaOnnxOfflineRecognizerResult;
+          typedef struct SherpaOnnxVadModelConfig {
+              struct { const char *model; float threshold, min_silence_duration, min_speech_duration; } silero_vad;
+              int sample_rate, num_threads; const char *provider;
+          } SherpaOnnxVadModelConfig;
+          typedef struct SherpaOnnxSpeechSegment { const float *samples; int n; } SherpaOnnxSpeechSegment;
+          typedef struct SherpaOnnxOfflineTtsConfig {
+              struct {
+                  struct { const char *model, *voices, *tokens, *data_dir, *lexicon, *dict_dir, *lang; float length_scale; } kokoro;
+                  int num_threads, debug; const char *provider;
+              } model;
+          } SherpaOnnxOfflineTtsConfig;
+          typedef struct SherpaOnnxGeneratedAudio { const float *samples; int n; } SherpaOnnxGeneratedAudio;
+          const SherpaOnnxOfflineRecognizer *SherpaOnnxCreateOfflineRecognizer(const SherpaOnnxOfflineRecognizerConfig *);
+          const SherpaOnnxOfflineStream     *SherpaOnnxCreateOfflineStream(const SherpaOnnxOfflineRecognizer *);
+          void                               SherpaOnnxAcceptWaveformOffline(const SherpaOnnxOfflineStream *, int, const float *, int);
+          void                               SherpaOnnxDecodeOfflineStream(const SherpaOnnxOfflineRecognizer *, const SherpaOnnxOfflineStream *);
+          const SherpaOnnxOfflineRecognizerResult *SherpaOnnxGetOfflineStreamResult(const SherpaOnnxOfflineStream *);
+          void                               SherpaOnnxDestroyOfflineRecognizerResult(const SherpaOnnxOfflineRecognizerResult *);
+          void                               SherpaOnnxDestroyOfflineStream(const SherpaOnnxOfflineStream *);
+          void                               SherpaOnnxDestroyOfflineRecognizer(const SherpaOnnxOfflineRecognizer *);
+          SherpaOnnxVoiceActivityDetector   *SherpaOnnxCreateVoiceActivityDetector(const SherpaOnnxVadModelConfig *, int);
+          void                               SherpaOnnxDestroyVoiceActivityDetector(SherpaOnnxVoiceActivityDetector *);
+          void                               SherpaOnnxVoiceActivityDetectorAcceptWaveform(SherpaOnnxVoiceActivityDetector *, const float *, int);
+          int                                SherpaOnnxVoiceActivityDetectorEmpty(SherpaOnnxVoiceActivityDetector *);
+          int                                SherpaOnnxVoiceActivityDetectorDetected(SherpaOnnxVoiceActivityDetector *);
+          const SherpaOnnxSpeechSegment     *SherpaOnnxVoiceActivityDetectorFront(SherpaOnnxVoiceActivityDetector *);
+          void                               SherpaOnnxVoiceActivityDetectorPop(SherpaOnnxVoiceActivityDetector *);
+          void                               SherpaOnnxDestroySpeechSegment(const SherpaOnnxSpeechSegment *);
+          const SherpaOnnxOfflineTts        *SherpaOnnxCreateOfflineTts(const SherpaOnnxOfflineTtsConfig *);
+          void                               SherpaOnnxDestroyOfflineTts(const SherpaOnnxOfflineTts *);
+          int                                SherpaOnnxOfflineTtsSampleRate(const SherpaOnnxOfflineTts *);
+          const SherpaOnnxGeneratedAudio    *SherpaOnnxOfflineTtsGenerate(const SherpaOnnxOfflineTts *, const char *, int, float);
+          void                               SherpaOnnxDestroyOfflineTtsGeneratedAudio(const SherpaOnnxGeneratedAudio *);
           STUB
-          # Just confirm voicebox.c parses with the stub. The .a / runtime types
-          # only matter at link time which the gate doesn't run.
-          # NOTE: this is intentionally a smoke gate, not a full build. The
-          # purpose is to give the agent dispatcher a green light; real builds
-          # happen via setup.sh on workstations.
-          echo "voicebox CI: syntax-only smoke gate (passes by construction)"
+
+          cat > ci-stubs/llama.h <<'STUB'
+          #pragma once
+          #include <stdint.h>
+          #include <stdbool.h>
+          struct llama_model; struct llama_context; struct llama_vocab; struct llama_sampler;
+          typedef int32_t llama_token;
+          typedef struct { void *_pad; } llama_memory_t;
+          struct llama_model_params   { int n_gpu_layers; void *_pad[8]; };
+          struct llama_context_params { unsigned int n_ctx, n_batch; void *_pad[8]; };
+          struct llama_sampler_chain_params { int seed; void *_pad[4]; };
+          struct llama_batch          { void *_pad[8]; };
+          enum { LLAMA_DEFAULT_SEED = 0xFFFFFFFF };
+          void                          llama_backend_init(void);
+          void                          llama_backend_free(void);
+          struct llama_model_params     llama_model_default_params(void);
+          struct llama_context_params   llama_context_default_params(void);
+          struct llama_sampler_chain_params llama_sampler_chain_default_params(void);
+          struct llama_model           *llama_model_load_from_file(const char *, struct llama_model_params);
+          void                          llama_model_free(struct llama_model *);
+          const struct llama_vocab     *llama_model_get_vocab(const struct llama_model *);
+          struct llama_context         *llama_init_from_model(struct llama_model *, struct llama_context_params);
+          void                          llama_free(struct llama_context *);
+          llama_memory_t                llama_get_memory(const struct llama_context *);
+          void                          llama_memory_clear(llama_memory_t, bool);
+          bool                          llama_memory_seq_rm(llama_memory_t, int, int, int);
+          int                           llama_tokenize(const struct llama_vocab *, const char *, int, llama_token *, int, bool, bool);
+          int                           llama_token_to_piece(const struct llama_vocab *, llama_token, char *, int, int, bool);
+          bool                          llama_vocab_is_eog(const struct llama_vocab *, llama_token);
+          struct llama_batch            llama_batch_get_one(llama_token *, int);
+          int                           llama_decode(struct llama_context *, struct llama_batch);
+          struct llama_sampler         *llama_sampler_chain_init(struct llama_sampler_chain_params);
+          void                          llama_sampler_chain_add(struct llama_sampler *, struct llama_sampler *);
+          struct llama_sampler         *llama_sampler_init_top_k(int);
+          struct llama_sampler         *llama_sampler_init_top_p(float, int);
+          struct llama_sampler         *llama_sampler_init_temp(float);
+          struct llama_sampler         *llama_sampler_init_dist(uint32_t);
+          llama_token                   llama_sampler_sample(struct llama_sampler *, struct llama_context *, int);
+          void                          llama_sampler_free(struct llama_sampler *);
+          STUB
+
+      - name: compile to object files (-c, no link)
+        run: |
+          # Compile each .c into a .o with the stubs. Catches type errors,
+          # scope errors (the bug class that slipped through last time),
+          # missing declarations, etc. Doesn't catch link errors but those
+          # are rare for this codebase.
+          set -e
+          # _GNU_SOURCE / _POSIX_C_SOURCE expose clock_gettime, strtok_r, strdup
+          # under glibc — macOS gives these by default but Linux gates them.
+          CFLAGS="-O2 -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-deprecated-declarations -Wno-format-truncation -Werror -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -Isrc -Ici-stubs"
+          cc $CFLAGS -c src/voicebox.c    -o /tmp/voicebox.o
+          cc $CFLAGS -c src/openrouter.c  -o /tmp/openrouter.o
+          cc $CFLAGS -c src/fx.c          -o /tmp/fx.o
+          cc -O2 -std=c11 -Wall -Werror -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -c src/mictest.c -o /tmp/mictest.o -Isrc
+          echo "all sources compile cleanly"
 
       - name: persona file validation
         run: |
