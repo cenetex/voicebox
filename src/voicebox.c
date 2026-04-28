@@ -297,6 +297,7 @@ static const char *g_wake_word = NULL;
 static const char *g_sleep_word = NULL;       /* explicit "over" phrase to end the session */
 static const char *g_or_key   = NULL;          /* OpenRouter API key (BYO-LLM) */
 static const char *g_or_model = "openai/gpt-oss-20b:free";
+static int         g_llm_enabled = 0;           /* set after successful llm_init */
 static double      g_active_until_ms = 0.0;
 #define WAKE_FOLLOWUP_MS 30000.0
 
@@ -444,9 +445,14 @@ static void *stdin_thread(void *arg) {
             const char *rest;
             int p_idx = parse_persona_prefix(line + 4, &rest);
             if (p_idx < 0) p_idx = g_default_persona;
-            evt_push_p(rest, 1, p_idx);
-            fprintf(stderr, "[evt:llm] persona=%s directive=%s\n",
-                    g_n_personas ? g_personas[p_idx].name : "default", rest);
+            /* ASK requires LLM backend (local or OpenRouter) */
+            if (!g_llm_enabled && (!g_or_key || !*g_or_key)) {
+                fprintf(stderr, "[voicebox] ASK ignored (no LLM backend configured)\n");
+            } else {
+                evt_push_p(rest, 1, p_idx);
+                fprintf(stderr, "[evt:llm] persona=%s directive=%s\n",
+                        g_n_personas ? g_personas[p_idx].name : "default", rest);
+            }
         }
         else if (strncmp(line, "QUIT",   4) == 0) { exit(0); }
         else                                      { fprintf(stderr, "[?] unknown: %s\n", line); }
@@ -725,9 +731,9 @@ int main(int argc, char **argv) {
     else {
         /* dummy block to keep brace balance */
     }
-    if (argc - arg_off < 3) {
+    if (argc - arg_off < 1) {
         fprintf(stderr,
-            "usage: %s [--ship] [--persona <file>] <whisper-dir> <kokoro-dir> <llm.gguf>\n"
+            "usage: %s [--ship] [--persona <file>] <kokoro-dir> [<whisper-dir>] [<llm.gguf>]\n"
             "\n"
             "  --ship                ship-AI mode (stdin line protocol):\n"
             "                          STATE <text>   replace ship telemetry\n"
@@ -752,9 +758,9 @@ int main(int argc, char **argv) {
             argv[0]);
         return 1;
     }
-    const char *whisper_dir = argv[arg_off];
-    const char *kokoro_dir  = argv[arg_off + 1];
-    const char *llm_path    = argv[arg_off + 2];
+    const char *kokoro_dir  = argv[arg_off];
+    const char *whisper_dir = (argc - arg_off > 1) ? argv[arg_off + 1] : NULL;
+    const char *llm_path    = (argc - arg_off > 2) ? argv[arg_off + 2] : NULL;
 
     if (ship_mode) g_persona = NAV7_PERSONA;
     if (persona_file && load_persona(persona_file) != 0) return 1;
@@ -797,47 +803,58 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    /* ---- load LLM ---- */
+    /* ---- load LLM (optional - required only if no OpenRouter key) ---- */
     llm_t llm = {0};
-    if (!llm_init(&llm, llm_path)) { fprintf(stderr, "llm load failed\n"); return 1; }
-
-    /* warm the persona — system prompt is cached in KV across all turns */
-    if (llm_warm_persona(&llm, g_persona) != 0) {
-        fprintf(stderr, "[llm] persona warmup failed; falling back to per-turn re-decode\n");
+    if (llm_path) {
+        if (!llm_init(&llm, llm_path)) { fprintf(stderr, "llm load failed\n"); return 1; }
+        g_llm_enabled = 1;
+        /* warm the persona — system prompt is cached in KV across all turns */
+        if (llm_warm_persona(&llm, g_persona) != 0) {
+            fprintf(stderr, "[llm] persona warmup failed; falling back to per-turn re-decode\n");
+        }
+    } else if (!g_or_key || !*g_or_key) {
+        fprintf(stderr, "[llm] LLM disabled (no llm.gguf and no OPENROUTER_API_KEY); ASK will be ignored\n");
     }
 
-    /* ---- load Whisper recognizer (sherpa-onnx) ---- */
-    char enc[512], dec[512], tok[512];
-    snprintf(enc, sizeof enc, "%s/whisper-encoder.onnx", whisper_dir);
-    snprintf(dec, sizeof dec, "%s/whisper-decoder.onnx", whisper_dir);
-    snprintf(tok, sizeof tok, "%s/whisper-tokens.txt",  whisper_dir);
+    /* ---- load Whisper recognizer + VAD (sherpa-onnx) - optional ---- */
+    const SherpaOnnxOfflineRecognizer *rec = NULL;
+    SherpaOnnxVoiceActivityDetector *vad = NULL;
+    int mic_enabled = 0;
+    if (whisper_dir) {
+        char enc[512], dec[512], tok[512];
+        snprintf(enc, sizeof enc, "%s/whisper-encoder.onnx", whisper_dir);
+        snprintf(dec, sizeof dec, "%s/whisper-decoder.onnx", whisper_dir);
+        snprintf(tok, sizeof tok, "%s/whisper-tokens.txt",  whisper_dir);
 
-    SherpaOnnxOfflineRecognizerConfig rec_cfg = {0};
-    rec_cfg.model_config.whisper.encoder = enc;
-    rec_cfg.model_config.whisper.decoder = dec;
-    rec_cfg.model_config.tokens          = tok;
-    rec_cfg.model_config.num_threads     = 2;
-    /* CoreML EP for Whisper requires a precompiled .mlmodelc (which onnxruntime
-       doesn't auto-generate) — stays on CPU until we add the compile step. */
-    rec_cfg.model_config.provider        = "cpu";
-    rec_cfg.decoding_method              = "greedy_search";
+        SherpaOnnxOfflineRecognizerConfig rec_cfg = {0};
+        rec_cfg.model_config.whisper.encoder = enc;
+        rec_cfg.model_config.whisper.decoder = dec;
+        rec_cfg.model_config.tokens          = tok;
+        rec_cfg.model_config.num_threads     = 2;
+        /* CoreML EP for Whisper requires a precompiled .mlmodelc (which onnxruntime
+           doesn't auto-generate) — stays on CPU until we add the compile step. */
+        rec_cfg.model_config.provider        = "cpu";
+        rec_cfg.decoding_method              = "greedy_search";
 
-    const SherpaOnnxOfflineRecognizer *rec = SherpaOnnxCreateOfflineRecognizer(&rec_cfg);
-    if (!rec) { fprintf(stderr, "whisper init failed\n"); return 1; }
+        rec = SherpaOnnxCreateOfflineRecognizer(&rec_cfg);
+        if (!rec) { fprintf(stderr, "whisper init failed\n"); return 1; }
 
-    /* ---- load VAD (Silero) ---- */
-    SherpaOnnxVadModelConfig vad_cfg = {0};
-    char vad_path[512];
-    snprintf(vad_path, sizeof vad_path, "%s/silero_vad.onnx", whisper_dir);
-    vad_cfg.silero_vad.model               = vad_path;
-    vad_cfg.silero_vad.threshold           = 0.5f;
-    vad_cfg.silero_vad.min_silence_duration = 0.5f;
-    vad_cfg.silero_vad.min_speech_duration  = 0.25f;
-    vad_cfg.sample_rate = SAMPLE_RATE;
-    vad_cfg.num_threads = 1;
-    vad_cfg.provider    = "cpu";
-    SherpaOnnxVoiceActivityDetector *vad =
-        SherpaOnnxCreateVoiceActivityDetector(&vad_cfg, 30 /* buffer secs */);
+        /* ---- load VAD (Silero) ---- */
+        SherpaOnnxVadModelConfig vad_cfg = {0};
+        char vad_path[512];
+        snprintf(vad_path, sizeof vad_path, "%s/silero_vad.onnx", whisper_dir);
+        vad_cfg.silero_vad.model               = vad_path;
+        vad_cfg.silero_vad.threshold           = 0.5f;
+        vad_cfg.silero_vad.min_silence_duration = 0.5f;
+        vad_cfg.silero_vad.min_speech_duration  = 0.25f;
+        vad_cfg.sample_rate = SAMPLE_RATE;
+        vad_cfg.num_threads = 1;
+        vad_cfg.provider    = "cpu";
+        vad = SherpaOnnxCreateVoiceActivityDetector(&vad_cfg, 30 /* buffer secs */);
+        mic_enabled = 1;
+    } else {
+        fprintf(stderr, "[voicebox] mic input disabled (no whisper-dir given)\n");
+    }
 
     /* ---- load Kokoro TTS ---- */
     char kmodel[512], kvoices[512], ktokens[512], kdata[512];
@@ -866,29 +883,31 @@ int main(int argc, char **argv) {
     if (!tts) { fprintf(stderr, "kokoro init failed\n"); return 1; }
     int tts_sr = SherpaOnnxOfflineTtsSampleRate(tts);
 
-    /* ---- start mic ---- */
-    ring_init(&g_ring, SAMPLE_RATE * 60);
-    ma_device_config dc = ma_device_config_init(ma_device_type_capture);
-    dc.capture.format    = ma_format_f32;
-    dc.capture.channels  = CHANNELS;
-    dc.sampleRate        = 48000; /* native; we decimate 3:1 to 16 kHz in callback */
-    dc.dataCallback      = on_capture;
-    dc.performanceProfile = ma_performance_profile_low_latency;
-    ma_device mic;
-    if (ma_device_init(NULL, &dc, &mic) != MA_SUCCESS) { fprintf(stderr, "mic fail\n"); return 1; }
-    ma_device_start(&mic);
-    fprintf(stderr, "[voicebox] mic: internal sr=%u ch=%u state=%d\n",
-            mic.capture.internalSampleRate,
-            mic.capture.internalChannels,
-            (int)ma_device_get_state(&mic));
+    /* ---- start mic (optional - only if whisper-dir provided) ---- */
+    ma_device mic = {0};
+    if (mic_enabled) {
+        ring_init(&g_ring, SAMPLE_RATE * 60);
+        ma_device_config dc = ma_device_config_init(ma_device_type_capture);
+        dc.capture.format    = ma_format_f32;
+        dc.capture.channels  = CHANNELS;
+        dc.sampleRate        = 48000; /* native; we decimate 3:1 to 16 kHz in callback */
+        dc.dataCallback      = on_capture;
+        dc.performanceProfile = ma_performance_profile_low_latency;
+        if (ma_device_init(NULL, &dc, &mic) != MA_SUCCESS) { fprintf(stderr, "mic fail\n"); return 1; }
+        ma_device_start(&mic);
+        fprintf(stderr, "[voicebox] mic: internal sr=%u ch=%u state=%d\n",
+                mic.capture.internalSampleRate,
+                mic.capture.internalChannels,
+                (int)ma_device_get_state(&mic));
 
-    /* report selected mic */
-    {
-        ma_device_info info;
-        if (ma_device_get_info(&mic, ma_device_type_capture, &info) == MA_SUCCESS)
-            fprintf(stderr, "[voicebox] mic: %s\n", info.name);
+        /* report selected mic */
+        {
+            ma_device_info info;
+            if (ma_device_get_info(&mic, ma_device_type_capture, &info) == MA_SUCCESS)
+                fprintf(stderr, "[voicebox] mic: %s\n", info.name);
+        }
+        fprintf(stderr, "[voicebox] listening — speak, then pause.\n");
     }
-    fprintf(stderr, "[voicebox] listening — speak, then pause.\n");
 
     /* ---- start stdin reader (ship mode only) ---- */
     pthread_t stdin_tid;
@@ -920,25 +939,37 @@ int main(int argc, char **argv) {
             persona_activate(e.persona_idx);
 
             if (e.via_llm) {
-                char state[2048]; state_get(state, sizeof state);
-                char trigger[4096];
-                snprintf(trigger, sizeof trigger,
-                         "[SHIP TELEMETRY] %s\n"
-                         "[STAGE DIRECTION — speak in your own voice. "
-                         "Paraphrase in one short sentence; "
-                         "do not quote this directive verbatim.] %s",
-                         state, e.text);
-                fprintf(stderr, "\n[ask:%s] %s\n[bot] ", persona_name, e.text);
-                llm_lat_t lat;
-                char *reply = llm_chat(&llm, trigger, speak_sentence, &speak_ctx, &lat);
-                fprintf(stderr, "\n[lat:%s] llm_first_tok=%.0fms first_speak=%.0fms total=%.0fms\n",
-                        persona_name, lat.t_first_token, lat.t_first_speak, lat.t_done);
-                free(reply);
+                /* ASK requires LLM; if not available, fall back to verbatim */
+                if (!g_llm_enabled && (!g_or_key || !*g_or_key)) {
+                    fprintf(stderr, "\n[ask:%s] %s (no LLM — falling back to verbatim)\n", persona_name, e.text);
+                    speak_sentence(e.text, &speak_ctx);
+                } else {
+                    char state[2048]; state_get(state, sizeof state);
+                    char trigger[4096];
+                    snprintf(trigger, sizeof trigger,
+                             "[SHIP TELEMETRY] %s\n"
+                             "[STAGE DIRECTION — speak in your own voice. "
+                             "Paraphrase in one short sentence; "
+                             "do not quote this directive verbatim.] %s",
+                             state, e.text);
+                    fprintf(stderr, "\n[ask:%s] %s\n[bot] ", persona_name, e.text);
+                    llm_lat_t lat;
+                    char *reply = llm_chat(&llm, trigger, speak_sentence, &speak_ctx, &lat);
+                    fprintf(stderr, "\n[lat:%s] llm_first_tok=%.0fms first_speak=%.0fms total=%.0fms\n",
+                            persona_name, lat.t_first_token, lat.t_first_speak, lat.t_done);
+                    free(reply);
+                }
             } else {
                 fprintf(stderr, "\n[say:%s] %s\n", persona_name, e.text);
                 speak_sentence(e.text, &speak_ctx);
             }
             free(e.text);
+        }
+
+        if (!mic_enabled) {
+            /* TTS-only mode: no mic to process, just sleep and drain events */
+            ma_sleep(100);
+            continue;
         }
 
         chunk_have += ring_pop(&g_ring, chunk + chunk_have, window - chunk_have);
@@ -1040,11 +1071,15 @@ int main(int argc, char **argv) {
                 /* pilot speech routes through the default persona (typically NAV-7) */
                 atomic_store(&g_current_speaker, g_default_persona);
                 persona_activate(g_default_persona);
-                llm_lat_t lat;
-                char *reply = llm_chat(&llm, user_msg, speak_sentence, &speak_ctx, &lat);
-                fprintf(stderr, "\n[lat] llm_first_tok=%.0fms first_speak=%.0fms total=%.0fms\n",
-                        lat.t_first_token, lat.t_first_speak, lat.t_done);
-                free(reply);
+                if (g_llm_enabled || (g_or_key && *g_or_key)) {
+                    llm_lat_t lat;
+                    char *reply = llm_chat(&llm, user_msg, speak_sentence, &speak_ctx, &lat);
+                    fprintf(stderr, "\n[lat] llm_first_tok=%.0fms first_speak=%.0fms total=%.0fms\n",
+                            lat.t_first_token, lat.t_first_speak, lat.t_done);
+                    free(reply);
+                } else {
+                    fprintf(stderr, "\n[no LLM] ignoring captain speech\n");
+                }
             }
             SherpaOnnxDestroyOfflineRecognizerResult(r);
             SherpaOnnxDestroyOfflineStream(st);
@@ -1053,10 +1088,10 @@ int main(int argc, char **argv) {
         }
     }
 
-    ma_device_uninit(&mic);
+    if (mic_enabled) ma_device_uninit(&mic);
     SherpaOnnxDestroyOfflineTts(tts);
-    SherpaOnnxDestroyVoiceActivityDetector(vad);
-    SherpaOnnxDestroyOfflineRecognizer(rec);
-    llm_free(&llm);
+    if (vad) SherpaOnnxDestroyVoiceActivityDetector(vad);
+    if (rec) SherpaOnnxDestroyOfflineRecognizer(rec);
+    if (g_llm_enabled) llm_free(&llm);
     return 0;
 }

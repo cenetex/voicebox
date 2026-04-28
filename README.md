@@ -29,12 +29,13 @@ STATE <free-form text>           replace ship telemetry blob
 PERSONA <name> <file>            register a persona at runtime
 EVENT [<persona>] <line>         speak verbatim via TTS (deterministic chatter)
 ASK   [<persona>] <directive>    LLM paraphrases with state, in that persona's voice
+                                 (ignored if no LLM backend configured)
 QUIT
 ```
 
-Pilot speech (mic) is always on. Captured audio → Whisper → LLM with current `STATE` injected → TTS in the default persona's voice.
+Pilot speech (mic) is enabled only when `<whisper-dir>` is provided. Captured audio → Whisper → LLM with current `STATE` injected → TTS in the default persona's voice.
 
-## Quick start (native, all-local)
+## Quick start (native, all-local, full-featured)
 
 ```bash
 ./setup.sh                              # builds deps, downloads models (~1.5 GB)
@@ -45,10 +46,26 @@ make
       --persona-add prospect personas/prospect.persona \
       --persona-add kepler   personas/kepler.persona \
       --persona-add helios   personas/helios.persona \
-      models/whisper models/kokoro models/llm.gguf
+      models/kokoro models/whisper models/llm.gguf
 ```
 
 Plays four distinct voices reading station chatter and a couple of LLM-driven asks with current ship state injected.
+
+## Quick start (TTS-only mode)
+
+For hosts that only need pre-rendered EVENT lines without STT or LLM:
+
+```bash
+./setup.sh --tts-only                   # downloads Kokoro only (~333 MB)
+make
+./scenarios/three_stations.sh \
+  | ./voicebox --ship \
+      --persona-add nav7     personas/nav7.persona \
+      --persona-add prospect personas/prospect.persona \
+      models/kokoro
+```
+
+Boots in <2 seconds, uses <500 MB RAM. ASK commands are ignored (no LLM backend).
 
 ## Quick start (browser demo, OpenRouter LLM via OAuth)
 
