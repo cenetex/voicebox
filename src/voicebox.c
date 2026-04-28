@@ -297,6 +297,7 @@ static const char *g_wake_word = NULL;
 static const char *g_sleep_word = NULL;       /* explicit "over" phrase to end the session */
 static const char *g_or_key   = NULL;          /* OpenRouter API key (BYO-LLM) */
 static const char *g_or_model = "openai/gpt-oss-20b:free";
+static int         g_llm_enabled = 0;           /* set after successful llm_init */
 static double      g_active_until_ms = 0.0;
 #define WAKE_FOLLOWUP_MS 30000.0
 
@@ -445,7 +446,7 @@ static void *stdin_thread(void *arg) {
             int p_idx = parse_persona_prefix(line + 4, &rest);
             if (p_idx < 0) p_idx = g_default_persona;
             /* ASK requires LLM backend (local or OpenRouter) */
-            if (!llm_enabled && (!g_or_key || !*g_or_key)) {
+            if (!g_llm_enabled && (!g_or_key || !*g_or_key)) {
                 fprintf(stderr, "[voicebox] ASK ignored (no LLM backend configured)\n");
             } else {
                 evt_push_p(rest, 1, p_idx);
@@ -804,10 +805,9 @@ int main(int argc, char **argv) {
 
     /* ---- load LLM (optional - required only if no OpenRouter key) ---- */
     llm_t llm = {0};
-    int llm_enabled = 0;
     if (llm_path) {
         if (!llm_init(&llm, llm_path)) { fprintf(stderr, "llm load failed\n"); return 1; }
-        llm_enabled = 1;
+        g_llm_enabled = 1;
         /* warm the persona — system prompt is cached in KV across all turns */
         if (llm_warm_persona(&llm, g_persona) != 0) {
             fprintf(stderr, "[llm] persona warmup failed; falling back to per-turn re-decode\n");
@@ -940,7 +940,7 @@ int main(int argc, char **argv) {
 
             if (e.via_llm) {
                 /* ASK requires LLM; if not available, fall back to verbatim */
-                if (!llm_enabled && (!g_or_key || !*g_or_key)) {
+                if (!g_llm_enabled && (!g_or_key || !*g_or_key)) {
                     fprintf(stderr, "\n[ask:%s] %s (no LLM — falling back to verbatim)\n", persona_name, e.text);
                     speak_sentence(e.text, &speak_ctx);
                 } else {
@@ -1071,7 +1071,7 @@ int main(int argc, char **argv) {
                 /* pilot speech routes through the default persona (typically NAV-7) */
                 atomic_store(&g_current_speaker, g_default_persona);
                 persona_activate(g_default_persona);
-                if (llm_enabled || (g_or_key && *g_or_key)) {
+                if (g_llm_enabled || (g_or_key && *g_or_key)) {
                     llm_lat_t lat;
                     char *reply = llm_chat(&llm, user_msg, speak_sentence, &speak_ctx, &lat);
                     fprintf(stderr, "\n[lat] llm_first_tok=%.0fms first_speak=%.0fms total=%.0fms\n",
@@ -1092,6 +1092,6 @@ int main(int argc, char **argv) {
     SherpaOnnxDestroyOfflineTts(tts);
     if (vad) SherpaOnnxDestroyVoiceActivityDetector(vad);
     if (rec) SherpaOnnxDestroyOfflineRecognizer(rec);
-    if (llm_enabled) llm_free(&llm);
+    if (g_llm_enabled) llm_free(&llm);
     return 0;
 }
