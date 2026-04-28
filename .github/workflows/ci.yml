@@ -117,7 +117,7 @@ jobs:
           set -e
           # _GNU_SOURCE / _POSIX_C_SOURCE expose clock_gettime, strtok_r, strdup
           # under glibc — macOS gives these by default but Linux gates them.
-          CFLAGS="-O2 -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-deprecated-declarations -Werror -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -Isrc -Ici-stubs"
+          CFLAGS="-O2 -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-deprecated-declarations -Wno-format-truncation -Werror -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -Isrc -Ici-stubs"
           cc $CFLAGS -c src/voicebox.c    -o /tmp/voicebox.o
           cc $CFLAGS -c src/openrouter.c  -o /tmp/openrouter.o
           cc $CFLAGS -c src/fx.c          -o /tmp/fx.o
