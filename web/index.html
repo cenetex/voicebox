@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>voicebox — browser demo</title>
+<style>
+  :root { color-scheme: dark; --bg:#0b0d10; --fg:#e6e6e6; --mut:#7a8290; --acc:#7cd; --warn:#fa6; --err:#f66; --ok:#7cf598; --pan:#15191e; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background:var(--bg); color:var(--fg); }
+  header { padding:12px 16px; border-bottom:1px solid #222; display:flex; gap:10px; align-items:center; }
+  header h1 { margin:0; font-size:14px; font-weight:600; letter-spacing:.04em; }
+  header .spacer { flex:1; }
+  button, select, input { background:#1a1f25; color:var(--fg); border:1px solid #2c333b; padding:6px 10px; border-radius:4px; font:inherit; }
+  button:hover { background:#222a33; cursor:pointer; }
+  button[disabled] { opacity:.4; cursor:not-allowed; }
+  .pill { padding:2px 8px; border-radius:99px; font-size:12px; }
+  .ok   { background:#1d3a25; color:var(--ok); }
+  .warn { background:#3a2a1d; color:var(--warn); }
+  .err  { background:#3a1d1d; color:var(--err); }
+  main  { display:grid; grid-template-rows: 1fr auto; height: calc(100vh - 45px); }
+  #log  { padding:14px 18px; overflow:auto; }
+  .turn { margin:0 0 14px 0; }
+  .turn .who { color:var(--mut); font-size:11px; letter-spacing:.05em; }
+  .turn .body { white-space:pre-wrap; }
+  .you .body { color:var(--acc); }
+  .bot .body { color:var(--fg); }
+  .sys .body { color:var(--mut); font-size:12px; }
+  .lat .body { color:var(--mut); font-size:11px; }
+  footer { display:flex; gap:8px; padding:10px 14px; border-top:1px solid #222; background:var(--pan); }
+  footer input[type=text] { flex:1; }
+  footer .modelpick { min-width:240px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>voicebox · browser</h1>
+  <span id="auth-status" class="pill warn">disconnected</span>
+  <span class="spacer"></span>
+  <select id="model" class="modelpick" disabled>
+    <option value="openai/gpt-oss-20b:free">openai/gpt-oss-20b · free</option>
+    <option value="meta-llama/llama-3.3-70b-instruct:free">llama-3.3-70b · free</option>
+    <option value="google/gemini-2.5-flash">gemini-2.5-flash</option>
+    <option value="anthropic/claude-haiku-4-5">claude-haiku-4-5</option>
+  </select>
+  <button id="connect">Connect OpenRouter</button>
+  <button id="disconnect" hidden>Disconnect</button>
+</header>
+<main>
+  <div id="log"></div>
+  <footer>
+    <input id="input" type="text" placeholder="say something to NAV-7…" autocomplete="off" disabled>
+    <button id="send" disabled>Send</button>
+  </footer>
+</main>
+<script type="module" src="./voicebox.js"></script>
+</body>
+</html>

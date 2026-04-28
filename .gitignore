@@ -1,0 +1,20 @@
+# build outputs
+/voicebox
+/mictest
+*.o
+*.dylib
+*.so
+*.exe
+
+# vendored deps + downloaded models — fetched by setup.sh
+/deps/
+/models/
+
+# logs and runtime artifacts
+*.log
+/web/serve.log
+/voicebox.log
+/setup.log
+*.bak
+/tmp/
+ISSUE_DRAFT.md
